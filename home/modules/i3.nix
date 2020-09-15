@@ -32,13 +32,42 @@ in {
     };
   };
 
-  config =
-    let decorationFont = "MesloLGSDZ ${toString config.system.machine.i3FontSize}"; in
-    {
+  config = let
+      decorationFont = "MesloLGSDZ ${toString config.system.machine.i3FontSize}";
+      iconFont = "FontAwesome ${toString (config.system.machine.i3FontSize)}";
+    in {
+      nixpkgs.overlays = [
+        (self: super: {
+          i3status-rust = with (import (fetchTarball
+            "https://github.com/nixos/nixpkgs/archive/master.tar.gz") { });
+            rustPlatform.buildRustPackage rec {
+              pname = "i3status-rust";
+              version = "0.14.1-df1974dd313f6b50bf0f19f948698fc6cb20e8f3";
+
+              src = pkgs.fetchFromGitHub {
+                owner = "greshake";
+                repo = "i3status-rust";
+                rev = "df1974dd313f6b50bf0f19f948698fc6cb20e8f3";
+                sha256 = "02q11a4ggackvdv8ls6cmiw5mjfnrb8505q4syfwfs0g5l4lhyjy";
+              };
+              cargoSha256 =
+                "1bg82qnbmwb6jqxpz9kln0h52311c2gkqadpvs4cabrx3ghafp1g";
+              nativeBuildInputs = [ pkgconfig ];
+              buildInputs = [ dbus libpulseaudio ];
+              doCheck = false;
+            };
+        })
+      ];
       home.packages = with pkgs; [
         rofi
         rofi-pass
-        python38Packages.py3status
+
+        i3status-rust
+        font-awesome
+        ethtool
+        iw
+        upower
+
         i3lock
         dconf # for gtk
 
@@ -49,6 +78,97 @@ in {
         picom
         peek
       ];
+
+      ## See https://github.com/greshake/i3status-rust/blob/master/blocks.md
+      ## for blocks configuration.
+      home.file.".config/i3status.toml".text = ''
+        theme = "space-villain"
+        icons = "awesome5"
+        interval = 2
+
+        [[block]]
+        block = "music"
+        player = "spotify"
+        buttons = ["play", "next"]
+
+        [[block]]
+        block = "net"
+        format = "W: {ssid} {signal_strength} {speed_up} {speed_down} {graph_down}"
+        device = "${config.system.machine.wirelessInterface}"
+        interval = 5
+        use_bits = false
+
+        [[block]]
+        block = "custom"
+        on_click = "alacritty -e ${
+          pkgs.writeShellScript "i3status-openvpn-urbint-on_click.sh" ''
+            if systemctl is-active --quiet openvpn-urbint.service; then
+              vpoff
+            else
+              vpon
+            fi
+          ''
+        }"
+        command = "${
+          pkgs.writeShellScript "i3status-openvpn-urbint-command.sh" ''
+            if systemctl is-active --quiet openvpn-urbint.service; then
+              jq -n "{ icon: \"net_vpn\", state: \"Good\", text: \" On\" }"
+            else
+              jq -n "{ icon: \"net_vpn\", state: \"Idle\", text: \" Off\" }"
+            fi
+          ''
+        }"
+        interval = 30
+        json = true
+
+        [[block]]
+        block = "memory"
+        display_type = "memory"
+        format_mem = "{Mug}G|"
+        format_swap = "{SUp}%"
+        icons = true
+        clickable = true
+        interval = 5
+        warning_mem = 80
+        warning_swap = 80
+        critical_mem = 95
+        critical_swap = 95
+
+        [[block]]
+        block = "cpu"
+        interval = 1
+        format = "{barchart} {utilization}% {frequency}GHz"
+
+        [[block]]
+        block = "load"
+        interval = 1
+        format = "{1m}"
+
+        [[block]]
+        block = "battery"
+        driver = "upower"
+        device = "DisplayDevice"
+        format = "{percentage}% {time} {power}W"
+
+        [[block]]
+        block = "sound"
+        driver = "auto"
+        device = "default"
+        format = "{output_name} {volume}"
+        max_vol = 45
+        [block.mappings]
+        "alsa_output.pci-0000_00_1f.3.analog-stereo" = "🎧"
+
+        [[block]]
+        block = "pomodoro"
+        length = 25
+        break_length = 5
+
+        [[block]]
+        block = "time"
+        interval = 60
+        format =  "  %a %h %d  %I:%M  "
+      '';
 
       xsession.scriptPath = ".hm-xsession";
       xsession.windowManager.i3 = {
@@ -159,90 +279,8 @@ in {
           };
 
           bars = [{
-            statusCommand =
-              let i3status-conf = pkgs.writeText "i3status.conf" ''
-              general {
-                  output_format = i3bar
-                  colors = true
-                  color_good = "#859900"
-
-                  interval = 1
-              }
-
-              order += "external_script current_task"
-              order += "external_script inbox"
-              order += "spotify"
-              order += "wireless ${config.system.machine.wirelessInterface}"
-              # order += "ethernet enp3s0f0"
-              order += "cpu_usage"
-              order += "battery 0"
-              # order += "volume master"
-              order += "time"
-
-              mpd {
-                  format = "%artist - %album - %title"
-              }
-
-              wireless ${config.system.machine.wirelessInterface} {
-                  format_up = "W: (%quality - %essid - %bitrate) %ip"
-                  format_down = "W: -"
-              }
-
-              ethernet enp3s0f0 {
-                  format_up = "E: %ip"
-                  format_down = "E: -"
-              }
-
-              battery 0 {
-                  format = "%status %percentage"
-                  path = "/sys/class/power_supply/BAT%d/uevent"
-                  low_threshold = 10
-              }
-
-              cpu_usage {
-                  format = "CPU: %usage"
-              }
-
-              load {
-                  format = "%5min"
-              }
-
-              time {
-                  format = "    %a %h %d ⌚   %I:%M     "
-              }
-
-              spotify {
-                  color_playing = "#fdf6e3"
-                  color_paused = "#93a1a1"
-                  format_stopped = ""
-                  format_down = ""
-                  format = "{title} - {artist} ({album})"
-              }
-
-              external_script inbox {
-                  script_path = '${emacsclient "(grfn/num-inbox-items-message)"}'
-                  format = 'Inbox: {output}'
-                  cache_timeout = 120
-                  color = "#93a1a1"
-              }
-
-              external_script current_task {
-                  script_path = '${emacsclient "(grfn/org-current-clocked-in-task-message)"}'
-                  # format = '{output}'
-                  cache_timeout = 60
-                  color = "#93a1a1"
-              }
-
-
-              # volume master {
-              #     format = "☊ %volume"
-              #     format_muted = "☊ X"
-              #     device = "default"
-              #     mixer_idx = 0
-              # }
-            '';
-              in "py3status -c ${i3status-conf}";
-            fonts = [ decorationFont ];
+            statusCommand = "${pkgs.i3status-rust}/bin/i3status-rs --never-pause ~/.config/i3status.toml";
+            fonts = [ decorationFont iconFont ];
             position = "top";
             colors = with solarized; rec {
               background = base03;
